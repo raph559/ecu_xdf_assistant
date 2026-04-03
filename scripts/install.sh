@@ -130,8 +130,10 @@ ensure_lmstudio_server() {
 }
 
 resolve_loaded_model_id() {
-  local response
-  response="$(curl -fsS "$LMSTUDIO_HOST/models" 2>/dev/null || true)"
+  local requested_model response
+  requested_model="$1"
+  resolve_lms_bin || return 1
+  response="$("$LMS_BIN" ps --json 2>/dev/null || true)"
   [[ -n "$response" ]] || return 1
 
   printf '%s' "$response" | "$PYTHON_BIN" -c '
@@ -149,7 +151,10 @@ try:
 except Exception:
     raise SystemExit(1)
 
-models = [item.get("id", "") for item in payload.get("data", []) if item.get("id")]
+if not isinstance(payload, list):
+    raise SystemExit(1)
+
+models = [item.get("identifier", "") for item in payload if isinstance(item, dict) and item.get("identifier")]
 if requested in models:
     print(requested)
     raise SystemExit(0)
@@ -161,7 +166,7 @@ for model in models:
         raise SystemExit(0)
 
 raise SystemExit(1)
-' "$LMSTUDIO_MODEL"
+' "$requested_model"
 }
 
 resolve_loaded_model_id_from_log() {
@@ -187,15 +192,23 @@ download_and_load_model() {
     return 0
   fi
 
+  local requested_model loaded_model_id
+  requested_model="$LMSTUDIO_MODEL"
   resolve_lms_bin || fail "LM Studio CLI is not available"
-  log "downloading LM Studio model $LMSTUDIO_MODEL"
-  "$LMS_BIN" get "$LMSTUDIO_MODEL"
-  log "loading LM Studio model $LMSTUDIO_MODEL"
-  "$LMS_BIN" load "$LMSTUDIO_MODEL" -y --ttl "$LMSTUDIO_LOAD_TTL" >/tmp/ecu_xdf_assistant_lmstudio_load.log 2>&1
+  log "downloading LM Studio model $requested_model"
+  "$LMS_BIN" get "$requested_model"
 
-  local loaded_model_id
+  if loaded_model_id="$(resolve_loaded_model_id "$requested_model")"; then
+    LMSTUDIO_MODEL="$loaded_model_id"
+    log "LM Studio model is already loaded as $LMSTUDIO_MODEL"
+    return 0
+  fi
+
+  log "loading LM Studio model $requested_model"
+  "$LMS_BIN" load "$requested_model" -y --ttl "$LMSTUDIO_LOAD_TTL" >/tmp/ecu_xdf_assistant_lmstudio_load.log 2>&1
+
   if loaded_model_id="$(resolve_loaded_model_id_from_log /tmp/ecu_xdf_assistant_lmstudio_load.log)"; then
-    if LMSTUDIO_MODEL="$(resolve_loaded_model_id)"; then
+    if LMSTUDIO_MODEL="$(resolve_loaded_model_id "$requested_model")"; then
       log "LM Studio model is available as $LMSTUDIO_MODEL"
       return 0
     fi
@@ -205,7 +218,7 @@ download_and_load_model() {
   fi
 
   for _ in $(seq 1 30); do
-    if LMSTUDIO_MODEL="$(resolve_loaded_model_id)"; then
+    if LMSTUDIO_MODEL="$(resolve_loaded_model_id "$requested_model")"; then
       log "LM Studio model is available as $LMSTUDIO_MODEL"
       return 0
     fi
