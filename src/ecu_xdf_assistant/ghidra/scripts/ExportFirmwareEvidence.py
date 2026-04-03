@@ -1,0 +1,189 @@
+# @category ECU_XDF_Assistant
+# @runtime Jython
+# Jython 2.7-compatible Ghidra script
+
+import json
+
+from ghidra.app.decompiler import DecompInterface
+from ghidra.program.model.address import AddressSet
+from ghidra.program.model.symbol import RefType
+
+
+def hex_to_int(value):
+    if value is None:
+        return 0
+    if isinstance(value, (int, long)):
+        return int(value)
+    text = str(value).strip()
+    if text.lower().startswith("0x"):
+        return int(text, 16)
+    return int(text)
+
+
+def load_json(path):
+    handle = open(path, "r")
+    try:
+        return json.loads(handle.read())
+    finally:
+        handle.close()
+
+
+def save_json(path, payload):
+    handle = open(path, "w")
+    try:
+        handle.write(json.dumps(payload, indent=2))
+    finally:
+        handle.close()
+
+
+def get_script_arg(index, default_value):
+    args = getScriptArgs()
+    if args is None or len(args) <= index:
+        return default_value
+    return args[index]
+
+
+def build_candidate_list(payload):
+    combined = []
+    for group_name in ("maps", "axes", "scalars"):
+        for item in payload.get(group_name, []):
+            entry = dict(item)
+            entry["candidate_type"] = group_name[:-1]
+            combined.append(entry)
+    return combined
+
+
+def get_function_summary(func, decompiler, limit_decompiled_chars):
+    body = func.getBody()
+    body_min = func.getEntryPoint().getOffset()
+    body_max = body.getMaxAddress().getOffset()
+    callers = []
+    callees = []
+
+    ref_iter = getReferencesTo(func.getEntryPoint())
+    while ref_iter.hasNext():
+        ref = ref_iter.next()
+        callers.append(ref.getFromAddress().getOffset())
+
+    called = func.getCalledFunctions(getMonitor())
+    for callee in called:
+        callees.append(callee.getEntryPoint().getOffset())
+
+    decompiled_text = ""
+    try:
+        result = decompiler.decompileFunction(func, 30, getMonitor())
+        if result is not None and result.decompileCompleted():
+            decompiled_text = result.getDecompiledFunction().getC()
+            if len(decompiled_text) > limit_decompiled_chars:
+                decompiled_text = decompiled_text[:limit_decompiled_chars]
+    except Exception as exc:
+        decompiled_text = "/* decompile failed: %s */" % str(exc)
+
+    return {
+        "entry": func.getEntryPoint().getOffset(),
+        "name": func.getName(),
+        "body_min": body_min,
+        "body_max": body_max,
+        "size": max(0, body_max - body_min),
+        "callers": callers[:32],
+        "callees": callees[:32],
+        "decompiled": decompiled_text,
+    }
+
+
+def collect_candidate_evidence(candidate, decompiler, function_limit):
+    address_factory = currentProgram.getAddressFactory().getDefaultAddressSpace()
+    start = address_factory.getAddress(candidate["address"])
+    size_bytes = int(candidate.get("size_bytes", 1))
+    stride = max(1, int(candidate.get("stride_bytes", 1)))
+
+    refs = []
+    function_entries = {}
+    keywords = set()
+
+    offset = 0
+    max_refs = 96
+    while offset < size_bytes:
+        target = start.add(offset)
+        ref_iter = getReferencesTo(target)
+        while ref_iter.hasNext():
+            ref = ref_iter.next()
+            from_addr = ref.getFromAddress()
+            func = getFunctionContaining(from_addr)
+            function_name = ""
+            function_entry = None
+            if func is not None:
+                function_name = func.getName()
+                function_entry = func.getEntryPoint().getOffset()
+                lower_name = function_name.lower()
+                for token in ("lookup", "interp", "table", "map", "lim", "torque", "boost", "fuel", "rail"):
+                    if token in lower_name:
+                        keywords.add(token)
+                if function_entry not in function_entries:
+                    function_entries[function_entry] = func
+
+            refs.append({
+                "from_address": from_addr.getOffset(),
+                "to_address": target.getOffset(),
+                "ref_type": str(ref.getReferenceType()),
+                "function_name": function_name,
+                "function_entry": function_entry,
+            })
+            if len(refs) >= max_refs:
+                break
+        if len(refs) >= max_refs:
+            break
+        offset += stride
+
+    nearby_functions = []
+    sorted_funcs = function_entries.values()
+    count = 0
+    for func in sorted_funcs:
+        nearby_functions.append(get_function_summary(func, decompiler, 2200))
+        count += 1
+        if count >= function_limit:
+            break
+
+    return {
+        "candidate_id": candidate["id"],
+        "address": candidate["address"],
+        "references_to": refs,
+        "nearby_functions": nearby_functions,
+        "lookup_keywords": sorted(list(keywords)),
+    }
+
+
+def main():
+    output_path = get_script_arg(0, "ghidra_evidence.json")
+    candidates_path = get_script_arg(1, "candidates.json")
+    function_limit = int(get_script_arg(2, "2"))
+
+    candidates_payload = load_json(candidates_path)
+    candidates = build_candidate_list(candidates_payload)
+
+    decompiler = DecompInterface()
+    decompiler.openProgram(currentProgram)
+
+    output = {
+        "program_name": currentProgram.getName(),
+        "candidates": [],
+    }
+
+    for candidate in candidates:
+        try:
+            output["candidates"].append(collect_candidate_evidence(candidate, decompiler, function_limit))
+        except Exception as exc:
+            output["candidates"].append({
+                "candidate_id": candidate.get("id", ""),
+                "address": int(candidate.get("address", 0)),
+                "references_to": [],
+                "nearby_functions": [],
+                "lookup_keywords": [],
+                "error": str(exc),
+            })
+
+    save_json(output_path, output)
+
+
+if __name__ == "__main__":
+    main()

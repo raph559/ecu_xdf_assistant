@@ -1,0 +1,40 @@
+{
+  "architecture": "auto",
+  "endianness": "auto",
+  "base_address": 0,
+  "scanner": {
+    "min_axis_length": 6,
+    "max_axis_length": 32,
+    "axis_lengths": [6, 8, 10, 12, 16, 20, 24, 32],
+    "table_shapes": [[8, 8], [10, 10], [12, 16], [16, 16]],
+    "max_candidates_per_kind": 300,
+    "axis_search_radius_bytes": 512,
+    "element_sizes_bits": [8, 16],
+    "signed_modes": [false, true]
+  },
+  "ghidra": {
+    "enabled": true,
+    "install_dir": "/path/to/ghidra",
+    "project_dir": ".ghidra_projects",
+    "processor": "",
+    "compiler_spec": "",
+    "base_address": 0,
+    "extra_import_args": [],
+    "postscript_name": "ExportFirmwareEvidence.py",
+    "decompile_referencing_functions": true,
+    "function_decompile_limit": 2
+  },
+  "lmstudio": {
+    "enabled": true,
+    "host": "http://127.0.0.1:1234/v1",
+    "model": "qwen/qwen3-4b",
+    "temperature": 0.1,
+    "top_n_maps": 80,
+    "top_n_scalars": 80,
+    "timeout_seconds": 180
+  },
+  "validation": {
+    "accept_threshold": 0.62,
+    "soft_review_threshold": 0.5
+  }
+}
